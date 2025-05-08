@@ -20,7 +20,7 @@ apt update && apt install -y dante-server
 while true; do
   read -p "Введите порт для SOCKS5-прокси [1080]: " PORT
   PORT=${PORT:-1080}
-  if [[ $PORT =~ ^[0-9]{1,5}$ ]] && ((PORT>=1 && PORT<=65535)); then
+  if [[ $PORT =~ ^[0-9]+$ ]] && ((PORT>=1 && PORT<=65535)); then
     break
   else
     echo "Некорректный порт. Введите число от 1 до 65535."
