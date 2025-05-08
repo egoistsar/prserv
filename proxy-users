@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+LOGFILE=/var/log/proxy-users.log
+USER_DB=/etc/dante-users/users.pwd
+
+function log() {
+  echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*" >> "$LOGFILE"
+}
+
+case ${1:-} in
+  list)
+    [[ -f $USER_DB ]] && cut -d: -f1 "$USER_DB"
+    ;;
+  add)
+    [[ $# -eq 3 ]] || { echo "Usage: $0 add username password"; exit 1; }
+    USER="$2"; PASS="$3"
+    HASH=$(openssl passwd -6 "$PASS")
+    echo "$USER:$HASH" >> "$USER_DB"
+    log "Added user $USER"
+    ;;
+  remove)
+    [[ $# -eq 2 ]] || { echo "Usage: $0 remove username"; exit 1; }
+    USER="$2"
+    grep -v "^$USER:" "$USER_DB" > "${USER_DB}.tmp" && mv "${USER_DB}.tmp" "$USER_DB"
+    log "Removed user $USER"
+    ;;
+  *)
+    echo "Usage: $0 {list|add|remove}"
+    exit 1
+    ;;
+esac
