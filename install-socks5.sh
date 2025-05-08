@@ -1,87 +1,108 @@
 #!/usr/bin/env bash
-set -euo pipefail
-# Перенаправляем STDIN на реальный терминал,
-# чтобы read читал не поток скрипта, а клавиатуру
-exec 0</dev/tty
-echo "==============================================="
-echo "  Интерактивный установщик SOCKS5-прокси (Dante)"
-echo "==============================================="
+set -e
 
-# 1. Сбор параметров
-read -rp "Интерфейс для прокси (по умолчанию eth0): " PROXY_IFACE
-PROXY_IFACE=${PROXY_IFACE:-eth0}
+# Перезапуск через TTY, если stdin не является терминалом
+if [[ ! -t 0 ]]; then
+  exec bash -s "$@" < /dev/tty
+fi
 
-read -rp "Порт прокси (по умолчанию 8467): " PROXY_PORT
+echo "
+===================================================="
+echo "  Dante SOCKS5 Proxy Installer"
+echo "===================================================="
+echo
+
+# 1) Update system
+echo "[1/8] Updating package lists..."
+apt-get update -qq
+echo "[2/8] Upgrading installed packages..."
+apt-get dist-upgrade -y -qq
+
+echo
+# 2) Prompt for configuration parameters
+read -rp "Enter internal interface to listen on (e.g., eth0) [default: eth0]: " INTERNAL_IF
+INTERNAL_IF=${INTERNAL_IF:-eth0}
+
+read -rp "Enter external interface for outbound traffic (e.g., eth0) [default: eth0]: " EXTERNAL_IF
+EXTERNAL_IF=${EXTERNAL_IF:-eth0}
+
+read -rp "Enter port for SOCKS5 proxy [default: 8467]: " PROXY_PORT
 PROXY_PORT=${PROXY_PORT:-8467}
 
-read -rp "Имя пользователя для PROXY: " PROXY_USER
+read -rp "Enter username for proxy authentication [default: socksuser]: " PROXY_USER
+PROXY_USER=${PROXY_USER:-socksuser}
 
+# Hidden password prompt через /dev/tty
 while true; do
-  read -rsp "Пароль для $PROXY_USER: " PROXY_PASS; echo
-  read -rsp "Повторите пароль: " PASS2; echo
-  [[ "$PROXY_PASS" == "$PASS2" ]] && break
-  echo "Пароли не совпадают — попробуйте ещё раз."
+  read -srp "Enter password for user $PROXY_USER: " PROXY_PASS < /dev/tty
+  echo
+  read -srp "Confirm password: " PROXY_PASS2 < /dev/tty
+  echo
+  [[ "$PROXY_PASS" == "$PROXY_PASS2" ]] && break
+  echo "Passwords do not match, try again."
 done
 
 echo
-echo "Параметры:"
-echo "  Интерфейс: $PROXY_IFACE"
-echo "  Порт:      $PROXY_PORT"
-echo "  Пользователь: $PROXY_USER"
+# 3) Install Dante server
+echo "[3/8] Installing dante-server package..."
+apt-get install -y dante-server
+
 echo
+# 4) Create proxy user and set password
+if id "$PROXY_USER" &>/dev/null; then
+  echo "User $PROXY_USER already exists, skipping creation."
+else
+  echo "[4/8] Creating system user $PROXY_USER..."
+  useradd --system --shell /usr/sbin/nologin "$PROXY_USER"
+fi
 
-read -rp "Продолжить установку? (yes/No) " CONFIRM
-case "$CONFIRM" in
-  [Yy][Ee][Ss]|[Yy]) ;;
-  *) echo "Установка отменена."; exit 1;;
-esac
+echo "$PROXY_USER:$PROXY_PASS" | chpasswd
+echo "Password set for $PROXY_USER"
 
-# 2. Установка Dante
-echo "-> Обновляем apt и ставим dante-server"
-apt update
-DEBIAN_FRONTEND=noninteractive apt install -y dante-server
-
-# 3. Генерация конфига
-echo "-> Пишем /etc/danted.conf"
+echo
+# 5) Generate Dante config
+echo "[5/8] Writing /etc/danted.conf..."
 cat > /etc/danted.conf <<EOF
+# /etc/danted.conf
 logoutput: syslog
-internal: $PROXY_IFACE port = $PROXY_PORT
-external: $PROXY_IFACE
-socksmethod: username
+internal: $INTERNAL_IF port = $PROXY_PORT
+external: $EXTERNAL_IF
+method: username
 user.privileged: root
-user.unprivileged: nobody
-
+user.notprivileged: nobody
+user.libwrap: nobody
 client pass {
-  from: 0.0.0.0/0 to: 0.0.0.0/0 log: connect error
+    from: 0.0.0.0/0 to: 0.0.0.0/0
+    log: error connect disconnect
 }
-
-socks pass {
-  from: 0.0.0.0/0 to: 0.0.0.0/0 log: connect error
+pass {
+    from: 0.0.0.0/0 to: 0.0.0.0/0
+    protocol: tcp udp
+    command: bind connect udpassociate
+    log: error connect disconnect
 }
 EOF
 
-# 4. Создание пользователя
-echo "-> Настраиваем пользователя $PROXY_USER"
-useradd -M -s /usr/sbin/nologin "$PROXY_USER" || true
-echo "${PROXY_USER}:${PROXY_PASS}" | chpasswd
+echo
+# 6) Configure firewall (iptables)
+echo "[6/8] Configuring iptables to allow proxy port..."
+ip6tables -A INPUT -p tcp --dport $PROXY_PORT -j ACCEPT || true
+iptables -A INPUT -p tcp --dport $PROXY_PORT -j ACCEPT || true
 
-# 5. Открытие порта
-echo "-> Открываем порт $PROXY_PORT"
-if command -v ufw &>/dev/null; then
-  ufw allow "$PROXY_PORT"/tcp
-else
-  iptables -C INPUT -p tcp --dport "$PROXY_PORT" -j ACCEPT 2>/dev/null \
-    || iptables -A INPUT -p tcp --dport "$PROXY_PORT" -j ACCEPT
-fi
-
-# 6. Запуск сервиса
-echo "-> Включаем и запускаем danted"
-systemctl enable --now danted
+# Persist iptables rules if iptables-persistent is installed
+dpkg -l | grep -qw iptables-persistent && netfilter-persistent save || true
 
 echo
-echo "==============================================="
-echo "Готово! SOCKS5-прокси запущен:"
-echo "  Интерфейс: $PROXY_IFACE"
-echo "  Порт:      $PROXY_PORT"
-echo "  Логин/Пароль: $PROXY_USER / <ваш пароль>"
-echo "==============================================="
+# 7) Restart and enable service
+echo "[7/8] Restarting danted service..."
+systemctl restart danted
+systemctl enable danted
+
+echo
+# 8) Done
+echo "[8/8] Dante SOCKS5 proxy is now installed and running."
+echo "Interface: $INTERNAL_IF"
+echo "Port:      $PROXY_PORT"
+echo "Username:  $PROXY_USER"
+echo
+echo "You can test it using: socks5://$PROXY_USER@<server_ip>:$PROXY_PORT"
