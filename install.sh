@@ -1,8 +1,8 @@
-# Вдохновлено логикой инсталлятора TorrServer (YouROK/TorrServer)
+# Вдохновлено логикой инсталлятора TorrServer→YouROK/TorrServer
 #!/usr/bin/env bash
 #
 # install.sh — автоматизированная без-интерактивная установка/удаление SOCKS5 прокси (Dante)
-# По образцу YouROK/TorrServer: работает через один пайп и без read
+# По образцу YouROK/TorrServer: одна команда через curl | bash и работа через флаги
 #
 
 set -euo pipefail
@@ -16,7 +16,7 @@ USER=proxy
 PASS=proxy
 ACTION=install  # install или uninstall
 
-# ======== Парсинг опций ========
+# ======== Функции ========
 usage() {
   cat <<EOF
 Usage: $0 [options]
@@ -28,28 +28,18 @@ Usage: $0 [options]
   -h            Показать это сообщение
 
 Examples:
-  curl -fsSL https://.../install.sh | sudo bash
-  curl -fsSL https://.../install.sh | sudo bash -s -- -p 1341 -u alice -P s3cr3t
-  curl -fsSL https://.../install.sh | sudo bash -s -- -r
+  # Установка с дефолтными параметрами
+  curl -fsSL https://raw.githubusercontent.com/egoistsar/prserv/main/install.sh | sudo bash
+  # Установка с кастомным портом, логином и паролем
+  curl -fsSL https://raw.githubusercontent.com/egoistsar/prserv/main/install.sh \
+    | sudo bash -s -- -p 1341 -u alice -P s3cr3t
+  # Полное удаление
+  curl -fsSL https://raw.githubusercontent.com/egoistsar/prserv/main/install.sh \
+    | sudo bash -s -- -r
 
 EOF
   exit 1
 }
-
-# Если скрипт запускают через пайп, параметры идут через '-s --'
-if [[ "${1:-}" == "-h" ]]; then
-  usage
-fi
-
-while getopts "p:u:P:rh" opt; do
-  case "$opt" in
-    p) PORT=$OPTARG ;;
-    u) USER=$OPTARG ;;
-    P) PASS=$OPTARG ;;
-    r) ACTION=uninstall ;;
-    h|*) usage ;;
-  esac
-done
 
 log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOGFILE"
@@ -61,33 +51,35 @@ die() {
 }
 
 check_root() {
-  [[ $EUID -eq 0 ]] || die "Требуется root-доступ"
+  [[ $EUID -eq 0 ]] || die "Нужно запустить от root"
 }
 
 detect_os() {
-  [[ -f /etc/os-release ]] || die "/etc/os-release не найден"
+  [[ -f /etc/os-release ]] || die "/etc/os-release не найден — не могу определить ОС"
   source /etc/os-release
   case "$ID" in
     debian|ubuntu) ;;
-    *) die "Только Debian/Ubuntu поддерживается (текущий: $ID)";;
+    *) die "Поддерживаются только Debian/Ubuntu (ваша: $ID)";;
   esac
-  log "OS: $PRETTY_NAME"
+  log "Detected OS: $PRETTY_NAME"
 }
 
 install_packages() {
-  log "Обновляем пакеты и устанавливаем Dante"
+  log "Updating package lists and installing Dante"
   apt-get update -y
   apt-get install -y dante-server libpam-pwdfile iptables
 }
 
 detect_interface() {
-  IFACE=$(ip route get 8.8.8.8 | awk '/dev/{for(i=1;i<NF;i++) if($i=="dev") print $(i+1)}')
+  log "Detecting external network interface"
+  IFACE=$(ip route get 8.8.8.8 2>/dev/null \
+    | awk '/dev/ { for(i=1;i<NF;i++) if($i=="dev") print $(i+1) }')
   IFACE=${IFACE:-eth0}
-  log "Интерфейс: $IFACE"
+  log "Using interface: $IFACE"
 }
 
 write_dante_conf() {
-  log "Пишем /etc/dante.conf"
+  log "Writing /etc/dante.conf"
   cat > /etc/dante.conf <<EOF
 logoutput: syslog
 internal: $IFACE port = $PORT
@@ -110,8 +102,8 @@ EOF
 }
 
 write_systemd_service() {
-  BIN=$(command -v sockd)
-  log "Создаём unit-файл systemd"
+  SOCKD_BIN=$(command -v sockd)
+  log "Creating systemd unit /etc/systemd/system/dante-server.service"
   cat > /etc/systemd/system/dante-server.service <<EOF
 [Unit]
 Description=Dante SOCKS5 Proxy Server
@@ -119,7 +111,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=$BIN -f /etc/dante.conf
+ExecStart=$SOCKD_BIN -f /etc/dante.conf
 Restart=on-failure
 RestartSec=5s
 
@@ -131,7 +123,7 @@ EOF
 }
 
 setup_pam() {
-  log "Настраиваем PAM"
+  log "Configuring PAM authentication (pam_pwdfile)"
   mkdir -p /etc/dante-users
   touch /etc/dante-users/users.pwd
   cat > /etc/pam.d/sockd <<EOF
@@ -142,7 +134,7 @@ EOF
 }
 
 configure_firewall() {
-  log "Настраиваем iptables"
+  log "Setting up iptables rules"
   iptables -I INPUT -p tcp --dport 22 -j ACCEPT
   iptables -I INPUT -p tcp --dport "$PORT" -j ACCEPT
   iptables -I INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT
@@ -150,7 +142,7 @@ configure_firewall() {
 }
 
 add_proxy_user() {
-  log "Добавляем пользователя $USER"
+  log "Adding proxy user '$USER'"
   HASH=$(openssl passwd -6 "$PASS")
   echo "$USER:$HASH" >> /etc/dante-users/users.pwd
 }
@@ -159,31 +151,45 @@ show_info() {
   IP=$(hostname -I | awk '{print $1}')
   cat <<EOF
 
-╔════════════════════════════════════╗
-║        SOCKS5 Proxy Details       ║
-╠════════════════════════════════════╣
+╔════════════════════════════════════════╗
+║         SOCKS5 Proxy Details          ║
+╠════════════════════════════════════════╣
 ║ Server:   $IP
 ║ Port:     $PORT
 ║ Username: $USER
 ║ Password: $PASS
-╚════════════════════════════════════╝
+╚════════════════════════════════════════╝
 
 EOF
 }
 
 uninstall_all() {
-  log "Удаляем сервис и пакеты"
+  log "Stopping and disabling Dante service"
   systemctl stop dante-server.service 2>/dev/null || true
   systemctl disable dante-server.service 2>/dev/null || true
+
+  log "Removing packages and configurations"
   apt-get purge --auto-remove -y dante-server libpam-pwdfile
   rm -f /etc/dante.conf
   rm -rf /etc/dante-users /etc/pam.d/sockd
   rm -f /etc/systemd/system/dante-server.service
   systemctl daemon-reload
-  log "Удаление завершено"
+
+  log "Uninstallation complete"
 }
 
-# ======== Main ========
+# ======== Основной блок ========
+# Разбор опций (при запуске через pipe => параметры передаются через -s --)
+while getopts "p:u:P:rh" opt; do
+  case "$opt" in
+    p) PORT=$OPTARG ;;
+    u) USER=$OPTARG ;;
+    P) PASS=$OPTARG ;;
+    r) ACTION=uninstall ;;
+    h|*) usage ;;
+  esac
+done
+
 check_root
 detect_os
 
