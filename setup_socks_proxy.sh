@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 IFS=$'\n\t'
+
 LOGFILE=/var/log/s5proxy_install.log
 TIMEOUT=300
+
+# По умолчанию — установка
+action_choice=1
 
 function log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOGFILE"
@@ -22,7 +26,7 @@ function ask_language() {
   echo "Select language / Выберите язык:"
   echo "1) English"
   echo "2) Русский"
-  read -t $TIMEOUT -rp "$(t prompt \"Enter your choice [1-2]: \" \"Введите ваш выбор [1-2]: \")" choice \
+  read -t $TIMEOUT -rp "$(t prompt "Enter your choice [1-2]: " "Введите ваш выбор [1-2]: ")" choice \
     || { log "No input, defaulting to English"; choice=1; }
   case "$choice" in
     2) LANGUAGE="ru" ;;
@@ -35,23 +39,23 @@ function ask_action() {
   t action "Select action:" "Выберите действие:"
   t opt1   "1) Install SOCKS5 proxy server"   "1) Установить SOCKS5 прокси-сервер"
   t opt2   "2) Uninstall SOCKS5 proxy server" "2) Удалить SOCKS5 прокси-сервер"
-  read -t $TIMEOUT -rp "$(t prompt \"Enter your choice [1-2]: \" \"Введите ваш выбор [1-2]: \")" action_choice \
+  read -t $TIMEOUT -rp "$(t prompt "Enter your choice [1-2]: " "Введите ваш выбор [1-2]: ")" action_choice \
     || { log "No input, default to install"; action_choice=1; }
 }
 
 function ask_port() {
   local default_port=1080
-  read -t $TIMEOUT -rp "$(t prompt \"Enter port number [${default_port}]: \" \"Введите порт [${default_port}]: \")" PORT
+  read -t $TIMEOUT -rp "$(t prompt "Enter port number [${default_port}]: " "Введите порт [${default_port}]: ")" PORT
   PORT=${PORT:-$default_port}
-  if ! [[ "$PORT" =~ ^[0-9]+$ ]] || (( PORT < 1 || PORT > 65535 )); then
+  if ! [[ "$PORT" =~ ^[0-9]+$ ]] || (( PORT<1 || PORT>65535 )); then
     log "Invalid port: $PORT"
     exit 1
   fi
 }
 
 function ask_credentials() {
-  read -t $TIMEOUT -rp "$(t prompt \"Enter username: \" \"Введите имя пользователя: \")" PROXY_USER
-  read -s -t $TIMEOUT -rp "$(t prompt \"Enter password: \" \"Введите пароль: \")" PROXY_PASS
+  read -t $TIMEOUT -rp "$(t prompt "Enter username: " "Введите имя пользователя: ")" PROXY_USER
+  read -s -t $TIMEOUT -rp "$(t prompt "Enter password: " "Введите пароль: ")" PROXY_PASS
   echo
   if [[ -z "$PROXY_USER" || -z "$PROXY_PASS" ]]; then
     log "Username/password empty"
@@ -150,17 +154,17 @@ function show_connection_info() {
   echo -e "╔════════════════════════════════════════╗"
   echo -e "║ $(t info \"SOCKS5 Proxy Connection Information\" \"Информация для подключения\") ║"
   echo -e "╠════════════════════════════════════════╣"
-  echo -e "║ Server:  $IP                     ║"
-  echo -e "║ Port:    $PORT                   ║"
-  echo -e "║ Username: $PROXY_USER            ║"
-  echo -e "║ Password: $PROXY_PASS            ║"
+  echo -e "║ Server:  $IP                   ║"
+  echo -e "║ Port:    $PORT                 ║"
+  echo -e "║ Username: $PROXY_USER          ║"
+  echo -e "║ Password: $PROXY_PASS          ║"
   echo -e "╚════════════════════════════════════════╝"
 }
 
 function uninstall() {
   log "Uninstalling Dante proxy"
-  systemctl stop dante-server.service   || true
-  systemctl disable dante-server.service|| true
+  systemctl stop dante-server.service    || true
+  systemctl disable dante-server.service || true
   apt-get purge --auto-remove -y dante-server libpam-pwdfile || true
   rm -rf /etc/dante.conf \
          /etc/systemd/system/dante-server.service \
@@ -171,27 +175,34 @@ function uninstall() {
   log "Uninstallation complete"
 }
 
+#
 # Main
+#
 ask_language
 ask_action
 
-if [[ $action_choice -eq 1 ]]; then
-  ask_port
-  ask_credentials
-  install_packages
-  detect_interface
-  create_dante_config
-  create_dante_service
-  setup_pam
-  configure_firewall
-  add_proxy_user
-  systemctl start dante-server.service
-  show_connection_info
+# Гарантируем, что action_choice всегда задан
+action_choice=${action_choice:-1}
 
-elif [[ $action_choice -eq 2 ]]; then
-  uninstall
-
-else
-  log "Unknown choice"
-  exit 1
-fi
+case "$action_choice" in
+  1)
+    ask_port
+    ask_credentials
+    install_packages
+    detect_interface
+    create_dante_config
+    create_dante_service
+    setup_pam
+    configure_firewall
+    add_proxy_user
+    systemctl start dante-server.service
+    show_connection_info
+    ;;
+  2)
+    uninstall
+    ;;
+  *)
+    log "Unknown choice: $action_choice"
+    exit 1
+    ;;
+esac
