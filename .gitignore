@@ -1,0 +1,7 @@
+# Ignore log files
+*.log
+/var/log/
+
+# Ignore temporary files
+*.swp
+*~
