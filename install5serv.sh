@@ -2,6 +2,19 @@
 exec < /dev/tty
 set -e
 
+cleanup() {
+  echo -e "\n[ОЧИСТКА] Удаление dante-server, пользователя и конфигов..."
+  systemctl stop danted || true
+  systemctl disable danted || true
+  rm -f /etc/danted.conf
+  rm -f /etc/systemd/system/danted.service
+  userdel -r "$USERNAME" 2>/dev/null || true
+  apt remove --purge -y dante-server
+  apt autoremove -y
+  echo "[ОЧИСТКА] Все изменения отменены. Скрипт завершён."
+  exit 1
+}
+
 # Проверка root
 if [[ $EUID -ne 0 ]]; then
   echo "Пожалуйста, запустите скрипт с правами root (sudo)" >&2
@@ -17,9 +30,12 @@ fi
 # Установка dante-server
 apt update && apt install -y dante-server
 
-# Интерактивный ввод с проверкой
+# Интерактивный ввод с проверкой и таймаутом
 while true; do
-  read -p "Введите порт для SOCKS5-прокси [1080]: " PORT
+  if ! read -t 120 -p "Введите порт для SOCKS5-прокси [1080]: " PORT; then
+    echo -e "\n[ОШИБКА] Время ожидания истекло. Без ввода данных работа невозможна."
+    cleanup
+  fi
   PORT=${PORT:-1080}
   if [[ $PORT =~ ^[0-9]+$ ]] && ((PORT>=1 && PORT<=65535)); then
     break
@@ -29,7 +45,10 @@ while true; do
 done
 
 while true; do
-  read -p "Введите логин для доступа: " USERNAME
+  if ! read -t 120 -p "Введите логин для доступа: " USERNAME; then
+    echo -e "\n[ОШИБКА] Время ожидания истекло. Без ввода данных работа невозможна."
+    cleanup
+  fi
   if [[ -n "$USERNAME" ]]; then
     break
   else
@@ -38,7 +57,10 @@ while true; do
 done
 
 while true; do
-  read -s -p "Введите пароль для доступа: " PASSWORD
+  if ! read -t 120 -s -p "Введите пароль для доступа: " PASSWORD; then
+    echo -e "\n[ОШИБКА] Время ожидания истекло. Без ввода данных работа невозможна."
+    cleanup
+  fi
   echo
   if [[ -n "$PASSWORD" ]]; then
     break
@@ -47,7 +69,10 @@ while true; do
   fi
 done
 
-read -p "Разрешить доступ только с определённого IP? (оставьте пустым для всех): " ALLOWED_IP
+if ! read -t 120 -p "Разрешить доступ только с определённого IP? (оставьте пустым для всех): " ALLOWED_IP; then
+  echo -e "\n[ОШИБКА] Время ожидания истекло. Без ввода данных работа невозможна."
+  cleanup
+fi
 
 # Создание пользователя для dante
 if ! id "$USERNAME" &>/dev/null; then
