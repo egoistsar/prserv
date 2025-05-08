@@ -1,83 +1,97 @@
 #!/usr/bin/env bash
-#
-# install.sh — автоматизированная без-интерактивная установка/удаление SOCKS5 прокси (Dante)
-# Полностью флаговый интерфейс, не читает из STDIN
-#
+#_install.sh — интерактивная установка/удаление SOCKS5 прокси (Dante)
+#   Все read читают ввод из /dev/tty, чтобы при "curl | bash" диалоги работали корректно
 
 set -euo pipefail
 IFS=$'\n\t'
-
 LOGFILE=/var/log/s5proxy_install.log
+TIMEOUT=300
 
-# Параметры по-умолчанию
-PORT=1080
-USER=proxy
-PASS=proxy
-ACTION=install  # install или uninstall
-
-# ======== Функции ========
-usage() {
-  cat <<EOF
-Usage: $0 [options]
-
-  -p PORT       Порт для SOCKS5 (default: $PORT)
-  -u USER       Логин прокси (default: $USER)
-  -P PASS       Пароль прокси (default: $PASS)
-  -r            Удалить установку (uninstall)
-  -h            Помощь
-
-Examples:
-  # Установка с дефолтными значениями
-  curl -fsSL https://raw.githubusercontent.com/egoistsar/prserv/main/install.sh | sudo bash
-  # Кастомный порт, логин и пароль
-  curl -fsSL https://raw.githubusercontent.com/egoistsar/prserv/main/install.sh \
-    | sudo bash -s -- -p 1341 -u alice -P s3cr3t
-  # Полное удаление
-  curl -fsSL https://raw.githubusercontent.com/egoistsar/prserv/main/install.sh \
-    | sudo bash -s -- -r
-EOF
-  exit 1
+# Локализация сообщений
+function t() {
+  local en="$1"; shift
+  local ru="$1"; shift
+  [[ "${LANGUAGE:-en}" == "ru" ]] && echo -e "$ru" || echo -e "$en"
 }
 
-log() {
+# Логирование
+function log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOGFILE"
 }
 
-die() {
+function die() {
   log "ERROR: $*"
   exit 1
 }
 
-check_root() {
+function check_root() {
   [[ $EUID -eq 0 ]] || die "Нужно запустить от root"
 }
 
-detect_os() {
+function detect_os() {
   [[ -f /etc/os-release ]] || die "/etc/os-release не найден"
   source /etc/os-release
   case "${ID:-}" in
     debian|ubuntu) ;;
     *) die "Поддерживаются только Debian/Ubuntu (ваша: $ID)";;
   esac
-  log "Detected OS: ${PRETTY_NAME:-Unknown}"
 }
 
-install_packages() {
-  log "Обновляем списки пакетов и устанавливаем Dante"
+# Выбор языка
+function ask_language() {
+  echo
+  echo "$(t "Select language:" "Выберите язык:")"
+  echo "  1) English"
+  echo "  2) Русский"
+  read -t $TIMEOUT -rp "$(t "Enter [1-2]:" "Введите [1-2]:") " choice </dev/tty || choice=1
+  case "$choice" in
+    2) LANGUAGE=ru ;; * ) LANGUAGE=en ;;
+  esac
+}
+
+# Выбор действия
+function ask_action() {
+  echo
+  echo "$(t "Select action:" "Выберите действие:")"
+  echo "  1) Install SOCKS5 proxy server"
+  echo "  2) Uninstall SOCKS5 proxy server"
+  read -t $TIMEOUT -rp "$(t "Enter [1-2]:" "Введите [1-2]:") " action_choice </dev/tty || action_choice=1
+  case "$action_choice" in
+    1) ACTION=install ;; 2) ACTION=uninstall ;; * ) ACTION=install ;;
+  esac
+}
+
+# Запрос порта
+function ask_port() {
+  local default=1080
+  read -t $TIMEOUT -rp "$(t "Enter port [${default}]:" "Введите порт [${default}]:") " PORT </dev/tty
+  PORT=${PORT:-$default}
+  [[ "$PORT" =~ ^[0-9]+$ ]] || die "Неверный порт: $PORT"
+}
+
+# Запрос учётных данных
+function ask_credentials() {
+  read -t $TIMEOUT -rp "$(t "Enter username:" "Введите имя пользователя:") " USER </dev/tty
+  read -s -t $TIMEOUT -rp "$(t "Enter password:" "Введите пароль:") " PASS </dev/tty
+  echo
+  [[ -n "$USER" && -n "$PASS" ]] || die "Логин и пароль не могут быть пустыми"
+}
+
+# Основные шаги установки
+function install_packages() {
+  log "Installing packages..."
   apt-get update -y
   apt-get install -y dante-server libpam-pwdfile iptables
 }
 
-detect_interface() {
-  log "Определяем внешний интерфейс"
-  IFACE=$(ip route get 8.8.8.8 2>/dev/null \
-    | awk '/dev/ { for(i=1;i<NF;i++) if($i=="dev") print $(i+1) }')
+function detect_interface() {
+  IFACE=$(ip route get 8.8.8.8 2>/dev/null | awk '/dev/ {for(i=1;i<NF;i++) if($i=="dev") print $(i+1)}')
   IFACE=${IFACE:-eth0}
-  log "Интерфейс: $IFACE"
+  log "Using interface: $IFACE"
 }
 
-write_dante_conf() {
-  log "Пишем /etc/dante.conf"
+function write_dante_conf() {
+  log "Writing /etc/dante.conf"
   cat > /etc/dante.conf <<EOF
 logoutput: syslog
 internal: $IFACE port = $PORT
@@ -99,9 +113,9 @@ pass {
 EOF
 }
 
-write_systemd_service() {
-  SOCKD_BIN=$(command -v sockd)
-  log "Создаём systemd-юнит /etc/systemd/system/dante-server.service"
+function write_systemd_service() {
+  local bin=$(command -v sockd)
+  log "Creating systemd service"
   cat > /etc/systemd/system/dante-server.service <<EOF
 [Unit]
 Description=Dante SOCKS5 Proxy Server
@@ -109,7 +123,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=$SOCKD_BIN -f /etc/dante.conf
+ExecStart=$bin -f /etc/dante.conf
 Restart=on-failure
 RestartSec=5s
 
@@ -120,8 +134,8 @@ EOF
   systemctl enable dante-server.service
 }
 
-setup_pam() {
-  log "Настраиваем PAM (pam_pwdfile)"
+function setup_pam() {
+  log "Configuring PAM"
   mkdir -p /etc/dante-users
   touch /etc/dante-users/users.pwd
   cat > /etc/pam.d/sockd <<EOF
@@ -131,66 +145,54 @@ EOF
   chmod 644 /etc/pam.d/sockd
 }
 
-configure_firewall() {
-  log "Настраиваем iptables"
+function configure_firewall() {
+  log "Configuring iptables"
   iptables -I INPUT -p tcp --dport 22 -j ACCEPT
-  iptables -I INPUT -p tcp --dport "$PORT" -j ACCEPT
+  iptables -I INPUT -p tcp --dport $PORT -j ACCEPT
   iptables -I INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT
   iptables -P INPUT DROP
 }
 
-add_proxy_user() {
-  log "Добавляем proxy-пользователя '$USER'"
-  HASH=$(openssl passwd -6 "$PASS")
-  echo "$USER:$HASH" >> /etc/dante-users/users.pwd
+function add_proxy_user() {
+  log "Adding proxy user $USER"
+  local hash=$(openssl passwd -6 "$PASS")
+  echo "$USER:$hash" >> /etc/dante-users/users.pwd
 }
 
-show_info() {
-  IP=$(hostname -I | awk '{print $1}')
-  cat <<EOF
-
-╔════════════════════════════════════════╗
-║         SOCKS5 Proxy Details          ║
-╠════════════════════════════════════════╣
-║ Server:   $IP
-║ Port:     $PORT
-║ Username: $USER
-║ Password: $PASS
-╚════════════════════════════════════════╝
-
-EOF
+function show_info() {
+  local ip=$(hostname -I | awk '{print $1}')
+  echo
+  echo "╔════════════════════════════════════════╗"
+  echo "║         SOCKS5 Proxy Details          ║"
+  echo "╠════════════════════════════════════════╣"
+  echo "║ Server:   $ip"
+  echo "║ Port:     $PORT"
+  echo "║ Username: $USER"
+  echo "║ Password: $PASS"
+  echo "╚════════════════════════════════════════╝"
+  echo
 }
 
-uninstall_all() {
-  log "Останавливаем и отключаем сервис"
+function uninstall_all() {
+  log "Uninstalling proxy..."
   systemctl stop dante-server.service 2>/dev/null || true
   systemctl disable dante-server.service 2>/dev/null || true
-
-  log "Удаляем пакеты и конфигурации"
   apt-get purge --auto-remove -y dante-server libpam-pwdfile
   rm -f /etc/dante.conf
   rm -rf /etc/dante-users /etc/pam.d/sockd
   rm -f /etc/systemd/system/dante-server.service
   systemctl daemon-reload
-
-  log "Удаление завершено"
 }
 
-# ======== Обработка флагов ========
-while getopts "p:u:P:rh" opt; do
-  case "${opt}" in
-    p) PORT=$OPTARG ;;
-    u) USER=$OPTARG ;;
-    P) PASS=$OPTARG ;;
-    r) ACTION=uninstall ;;
-    h|*) usage ;;
-  esac
-done
-
+# ======== Main ========
 check_root
 detect_os
+ask_language
+ask_action
 
-if [[ "${ACTION}" == "install" ]]; then
+if [[ "$ACTION" == "install" ]]; then
+  ask_port
+  ask_credentials
   install_packages
   detect_interface
   write_dante_conf
