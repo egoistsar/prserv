@@ -1,4 +1,5 @@
 #!/bin/bash
+exec < /dev/tty
 set -e
 
 # Проверка root
