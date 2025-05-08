@@ -1,8 +1,7 @@
-# Вдохновлено логикой инсталлятора TorrServer→YouROK/TorrServer
 #!/usr/bin/env bash
 #
 # install.sh — автоматизированная без-интерактивная установка/удаление SOCKS5 прокси (Dante)
-# По образцу YouROK/TorrServer: одна команда через curl | bash и работа через флаги
+# Полностью флаговый интерфейс, не читает из STDIN
 #
 
 set -euo pipefail
@@ -24,19 +23,18 @@ Usage: $0 [options]
   -p PORT       Порт для SOCKS5 (default: $PORT)
   -u USER       Логин прокси (default: $USER)
   -P PASS       Пароль прокси (default: $PASS)
-  -r            Удалить установленный прокси (uninstall mode)
-  -h            Показать это сообщение
+  -r            Удалить установку (uninstall)
+  -h            Помощь
 
 Examples:
-  # Установка с дефолтными параметрами
+  # Установка с дефолтными значениями
   curl -fsSL https://raw.githubusercontent.com/egoistsar/prserv/main/install.sh | sudo bash
-  # Установка с кастомным портом, логином и паролем
+  # Кастомный порт, логин и пароль
   curl -fsSL https://raw.githubusercontent.com/egoistsar/prserv/main/install.sh \
     | sudo bash -s -- -p 1341 -u alice -P s3cr3t
   # Полное удаление
   curl -fsSL https://raw.githubusercontent.com/egoistsar/prserv/main/install.sh \
     | sudo bash -s -- -r
-
 EOF
   exit 1
 }
@@ -55,31 +53,31 @@ check_root() {
 }
 
 detect_os() {
-  [[ -f /etc/os-release ]] || die "/etc/os-release не найден — не могу определить ОС"
+  [[ -f /etc/os-release ]] || die "/etc/os-release не найден"
   source /etc/os-release
-  case "$ID" in
+  case "${ID:-}" in
     debian|ubuntu) ;;
     *) die "Поддерживаются только Debian/Ubuntu (ваша: $ID)";;
   esac
-  log "Detected OS: $PRETTY_NAME"
+  log "Detected OS: ${PRETTY_NAME:-Unknown}"
 }
 
 install_packages() {
-  log "Updating package lists and installing Dante"
+  log "Обновляем списки пакетов и устанавливаем Dante"
   apt-get update -y
   apt-get install -y dante-server libpam-pwdfile iptables
 }
 
 detect_interface() {
-  log "Detecting external network interface"
+  log "Определяем внешний интерфейс"
   IFACE=$(ip route get 8.8.8.8 2>/dev/null \
     | awk '/dev/ { for(i=1;i<NF;i++) if($i=="dev") print $(i+1) }')
   IFACE=${IFACE:-eth0}
-  log "Using interface: $IFACE"
+  log "Интерфейс: $IFACE"
 }
 
 write_dante_conf() {
-  log "Writing /etc/dante.conf"
+  log "Пишем /etc/dante.conf"
   cat > /etc/dante.conf <<EOF
 logoutput: syslog
 internal: $IFACE port = $PORT
@@ -103,7 +101,7 @@ EOF
 
 write_systemd_service() {
   SOCKD_BIN=$(command -v sockd)
-  log "Creating systemd unit /etc/systemd/system/dante-server.service"
+  log "Создаём systemd-юнит /etc/systemd/system/dante-server.service"
   cat > /etc/systemd/system/dante-server.service <<EOF
 [Unit]
 Description=Dante SOCKS5 Proxy Server
@@ -123,7 +121,7 @@ EOF
 }
 
 setup_pam() {
-  log "Configuring PAM authentication (pam_pwdfile)"
+  log "Настраиваем PAM (pam_pwdfile)"
   mkdir -p /etc/dante-users
   touch /etc/dante-users/users.pwd
   cat > /etc/pam.d/sockd <<EOF
@@ -134,7 +132,7 @@ EOF
 }
 
 configure_firewall() {
-  log "Setting up iptables rules"
+  log "Настраиваем iptables"
   iptables -I INPUT -p tcp --dport 22 -j ACCEPT
   iptables -I INPUT -p tcp --dport "$PORT" -j ACCEPT
   iptables -I INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT
@@ -142,7 +140,7 @@ configure_firewall() {
 }
 
 add_proxy_user() {
-  log "Adding proxy user '$USER'"
+  log "Добавляем proxy-пользователя '$USER'"
   HASH=$(openssl passwd -6 "$PASS")
   echo "$USER:$HASH" >> /etc/dante-users/users.pwd
 }
@@ -164,24 +162,23 @@ EOF
 }
 
 uninstall_all() {
-  log "Stopping and disabling Dante service"
+  log "Останавливаем и отключаем сервис"
   systemctl stop dante-server.service 2>/dev/null || true
   systemctl disable dante-server.service 2>/dev/null || true
 
-  log "Removing packages and configurations"
+  log "Удаляем пакеты и конфигурации"
   apt-get purge --auto-remove -y dante-server libpam-pwdfile
   rm -f /etc/dante.conf
   rm -rf /etc/dante-users /etc/pam.d/sockd
   rm -f /etc/systemd/system/dante-server.service
   systemctl daemon-reload
 
-  log "Uninstallation complete"
+  log "Удаление завершено"
 }
 
-# ======== Основной блок ========
-# Разбор опций (при запуске через pipe => параметры передаются через -s --)
+# ======== Обработка флагов ========
 while getopts "p:u:P:rh" opt; do
-  case "$opt" in
+  case "${opt}" in
     p) PORT=$OPTARG ;;
     u) USER=$OPTARG ;;
     P) PASS=$OPTARG ;;
@@ -193,7 +190,7 @@ done
 check_root
 detect_os
 
-if [[ "$ACTION" == "install" ]]; then
+if [[ "${ACTION}" == "install" ]]; then
   install_packages
   detect_interface
   write_dante_conf
