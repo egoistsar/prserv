@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+# Bootstrap to support `curl | bash` with interactive reads and here-docs
+set -euo pipefail
+IFS=$'
+	'
+# If script is fed via pipe, capture to temp file and re-exec
+if [[ ! -t 0 ]]; then
+  TMPFILE=$(mktemp)
+  cat > "$TMPFILE"
+  exec bash "$TMPFILE" "$@"
+fi
+
 #_install.sh — интерактивная установка/удаление SOCKS5 прокси (Dante)
 #   Все read читают ввод из /dev/tty, чтобы при "curl | bash" диалоги работали корректно
 
