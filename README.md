@@ -1,21 +1,14 @@
 # s5proxyserver
 
-Автоматизированная установка и настройка SOCKS5 прокси-сервера на базе Dante.
+## Быстрая установка / удаление
 
-## Возможности
-- Интерактивная установка/удаление одной командой  
-- Двуязычный интерфейс: English / Русский (таймаут ожидания ввода 5 минут)  
-- Аутентификация по логину/паролю с SHA-512  
-- Автоматическое определение сетевого интерфейса и пути к бинарю `sockd`  
-- Настройка брандмауэра (iptables)  
-- Сервис systemd с автозапуском  
-- Скрипт `proxy-users` для управления учётными записями  
-
-## Требования
-- Debian 8+ или Ubuntu 16.04+  
-- root-доступ  
-- Интернет для загрузки пакетов  
-
-## Установка
 ```bash
-eval "$(curl -fsSL https://raw.githubusercontent.com/egoistsar/s5proxyserver/main/setup_socks_proxy.sh)"
+# Установка с дефолтными параметрами (порт=1080, пользователь=proxy, пароль=proxy)
+curl -fsSL https://raw.githubusercontent.com/egoistsar/prserv/main/install.sh | sudo bash
+
+# Указать порт, логин и пароль:
+curl -fsSL https://raw.githubusercontent.com/egoistsar/prserv/main/install.sh \
+  | sudo bash -s -- -p 1341 -u alice -P s3cr3t
+
+# Полное удаление:
+curl -fsSL https://raw.githubusercontent.com/egoistsar/prserv/main/install.sh | sudo bash -s -- -r
