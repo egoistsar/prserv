@@ -193,4 +193,58 @@ function show_info() {
   echo
   echo "╔════════════════════════════════════╗"
   echo "║ $(t info "SOCKS5 Proxy Information" "Информация SOCKS5 прокси") ║"
-  echo "╠
+  echo "╠════════════════════════════════════╣"
+  echo "║ Server:   $ip              ║"
+  echo "║ Port:     $PORT             ║"
+  echo "║ Username: $PROXY_USER       ║"
+  echo "║ Password: $PROXY_PASS       ║"
+  echo "╚════════════════════════════════════╝"
+}
+
+# === Удаление ===
+function uninstall() {
+  log "Stopping and disabling Dante service"
+  systemctl stop dante-server.service 2>/dev/null || true
+  systemctl disable dante-server.service 2>/dev/null || true
+
+  log "Purging packages"
+  apt-get purge --auto-remove -y dante-server libpam-pwdfile
+
+  log "Removing configs and scripts"
+  rm -f /etc/dante.conf
+  rm -rf /etc/dante-users /etc/pam.d/sockd
+  rm -f /etc/systemd/system/dante-server.service
+  systemctl daemon-reload
+
+  log "Uninstall complete"
+}
+
+# === Main ===
+check_root
+check_deps
+detect_os
+
+ask_language
+ask_action
+
+case "${ACTION:-1}" in
+  1)
+    ask_port
+    ask_credentials
+    install_packages
+    detect_interface
+    create_dante_config
+    create_systemd_service
+    setup_pam
+    configure_firewall
+    add_user
+    systemctl start dante-server.service
+    show_info
+    ;;
+  2)
+    uninstall
+    ;;
+  *)
+    die "Unknown action: $ACTION"
+    ;;
+esac
